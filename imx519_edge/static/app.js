@@ -2,9 +2,11 @@
 const $ = (id) => document.getElementById(id);
 const STATE_LABELS = { starting: '準備中', idle: '待機中', moving: '移動中', capturing: '撮影中', error: 'エラー' };
 const KEY_PRODUCT = 'imx519.product';
+const KEY_MODE = 'imx519.mode';
 
 let options = null;
 let product = null;
+let mode = 'imx519'; // 'imx519'（このカメラで撮る）/ 'iphone'（スマホの写真を補正する）
 let status = null;
 let job = null;
 const finished = new Set(); // 終わったと知らせたジョブ（状態と進捗の両方の通知で二重に知らせない）
@@ -359,9 +361,30 @@ function openShoot(p) {
   store(KEY_PRODUCT, p);
   $('p-id').textContent = p.id;
   $('p-title').textContent = p.title;
-  $('view-product').hidden = true;
-  $('view-shoot').hidden = false;
+  showImx519Views();
   loadSessions();
+}
+
+function showImx519Views() {
+  const active = mode === 'imx519';
+  $('view-product').hidden = !active || !!product;
+  $('view-shoot').hidden = !active || !product;
+}
+
+// --- 撮り方の切り替え ---
+
+function setMode(next) {
+  mode = next === 'iphone' ? 'iphone' : 'imx519';
+  store(KEY_MODE, mode);
+  document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.mode === mode)));
+  $('view-iphone').hidden = mode !== 'iphone';
+  showImx519Views();
+  if (mode === 'iphone') {
+    stopLive(false);
+    loadUploads();
+  } else {
+    clearTimeout(uploadsTimer);
+  }
 }
 
 function openProduct() {
@@ -371,8 +394,7 @@ function openProduct() {
   clearTimeout(sessionsTimer);
   sessionRows.clear();
   $('sessions').innerHTML = '';
-  $('view-shoot').hidden = true;
-  $('view-product').hidden = false;
+  showImx519Views();
 }
 
 const SESSION_STATES = {
@@ -449,11 +471,176 @@ function sessionHtml(r) {
 }
 
 function openViewer(id) {
-  const url = `/api/studio/sessions/${encodeURIComponent(id)}/final.jpg`;
-  $('viewer-title').textContent = id;
+  showViewer(`/api/studio/sessions/${encodeURIComponent(id)}/final.jpg`, id);
+}
+
+function showViewer(url, title, downloadUrl = null) {
+  $('viewer-title').textContent = title;
   $('viewer-img').src = url;
   $('viewer-open').href = url;
+  $('viewer-download').hidden = !downloadUrl;
+  if (downloadUrl) $('viewer-download').href = downloadUrl;
   $('viewer').hidden = false;
+}
+
+// --- iPhone カメラモード ---
+
+const UPLOAD_STATES = {
+  queued: ['処理待ち', 'busy'],
+  processing: ['補正中', 'busy'],
+  done: ['完成', 'done'],
+  failed: ['失敗', 'failed'],
+};
+let uploadsTimer = null;
+const uploadRows = new Map(); // アップロード ID → { li, sig }
+const finalBlobs = new Map(); // アップロード ID → 完成画像（共有は押した瞬間に呼ぶ必要があるので先に読んでおく）
+
+function uploadUrl(id, name, download = false) {
+  return `/api/studio/uploads/${encodeURIComponent(id)}/${name}${download ? '?download=true' : ''}`;
+}
+
+function sendFile(file, onProgress) {
+  // fetch では送信の進み具合が分からないので XMLHttpRequest で送る
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/studio/uploads?filename=${encodeURIComponent(file.name || 'image.jpg')}`);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+      else reject(new Error(body?.detail ?? `${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('通信が切れました'));
+    xhr.send(file);
+  });
+}
+
+const progressHtml = (pct, text) =>
+  `<div class="session-progress"><div class="session-bar"><div class="session-fill" style="width:${pct}%"></div></div><span>${text}</span></div>`;
+
+async function sendFiles(files) {
+  const list = $('sending');
+  list.hidden = false;
+  // 先に全部を「送信待ち」で並べ、1 枚ずつ送る
+  const items = files.map((file) => {
+    const li = document.createElement('li');
+    const head = `<div class="session-head"><span class="mono">${escapeHtml(file.name)}</span><span>${(file.size / 1e6).toFixed(1)} MB</span></div>`;
+    li.innerHTML = head + progressHtml(0, '送信待ち');
+    list.append(li);
+    return { file, li, head };
+  });
+  for (const { file, li, head } of items) {
+    try {
+      await sendFile(file, (f) => (li.innerHTML = head + progressHtml(Math.round(f * 100), `送信中（${Math.round(f * 100)}%）`)));
+      clientLog(`写真を送りました: ${file.name}`);
+      li.remove();
+      loadUploads();
+    } catch (e) {
+      li.innerHTML = head + `<div class="session-error">送れませんでした: ${escapeHtml(e.message)}</div>`;
+      clientLog(`写真を送れませんでした: ${file.name}: ${e.message}`, 'error');
+      setTimeout(() => { li.remove(); list.hidden = !list.children.length; }, 15000);
+    }
+  }
+  list.hidden = !list.children.length;
+}
+
+async function loadUploads() {
+  clearTimeout(uploadsTimer);
+  if (mode !== 'iphone') return;
+  let rows = [];
+  try {
+    rows = await api('/api/studio/uploads');
+    $('uploads-note').hidden = true;
+  } catch (e) {
+    $('uploads-note').hidden = false;
+    $('uploads-note').textContent = `サーバーに届きません（${e.message}）`;
+  }
+  if (mode !== 'iphone') return;
+  renderUploads(rows);
+  const waiting = rows.some((r) => r.state === 'queued' || r.state === 'processing');
+  uploadsTimer = setTimeout(loadUploads, waiting ? 2000 : 8000);
+}
+
+function renderUploads(rows) {
+  const list = $('uploads');
+  const ids = new Set(rows.map((r) => r.upload_id));
+  for (const [id, entry] of uploadRows) if (!ids.has(id)) { entry.li.remove(); uploadRows.delete(id); }
+  rows.forEach((r, i) => {
+    let entry = uploadRows.get(r.upload_id);
+    if (!entry) {
+      entry = { li: document.createElement('li'), sig: '' };
+      uploadRows.set(r.upload_id, entry);
+    }
+    const sig = JSON.stringify([r.state, r.progress, r.error, r.warnings]);
+    if (entry.sig !== sig) {
+      entry.li.innerHTML = uploadHtml(r);
+      entry.sig = sig;
+    }
+    if (list.children[i] !== entry.li) list.insertBefore(entry.li, list.children[i] ?? null);
+  });
+  $('uploads-empty').hidden = rows.length > 0;
+  // 新しい完成画像を、共有に備えて読んでおく（新しい 4 枚まで）
+  rows.filter((r) => r.state === 'done').slice(0, 4).forEach((r) => prefetchFinal(r.upload_id));
+}
+
+function uploadHtml(r) {
+  const [label, cls] = UPLOAD_STATES[r.state] ?? [r.state, ''];
+  const id = escapeHtml(r.upload_id);
+  const time = r.created_at ? new Date(r.created_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  let body = '';
+  if (r.state === 'queued' || r.state === 'processing') {
+    const p = r.progress;
+    const pct = p && p.total ? Math.round((100 * p.done) / p.total) : 0;
+    const text = p ? `${escapeHtml(p.label)}（${pct}%）` : label;
+    body = `<div class="session-progress"><div class="session-bar"><div class="session-fill ${p ? '' : 'waiting'}" style="width:${pct}%"></div></div><span>${text}</span></div>`;
+  } else if (r.state === 'done') {
+    const size = r.final_size ? `${r.final_size[0]}×${r.final_size[1]}` : '';
+    const warnings = (r.warnings ?? []).map((w) => `<li>${escapeHtml(w)}</li>`).join('');
+    const share = navigator.canShare ? `<button type="button" data-share="${id}">共有・写真に保存</button>` : '';
+    body = `<button type="button" class="thumb uploads-thumb" data-upload-view="${id}" aria-label="補正した画像を大きく見る"><img loading="lazy" src="${uploadUrl(r.upload_id, 'preview.jpg')}" alt="補正した画像 ${escapeHtml(r.filename)}"></button>`
+      + `<span class="small muted">${size}・タップで大きく見る</span>`
+      + (warnings ? `<ul class="upload-warnings">${warnings}</ul>` : '')
+      + `<div class="upload-actions"><a class="button primary" href="${uploadUrl(r.upload_id, 'final.jpg', true)}" download>保存</a>${share}`
+      + `<button type="button" data-upload-redo="${id}">やり直す</button><button type="button" class="danger" data-upload-delete="${id}">消す</button></div>`;
+  } else if (r.state === 'failed') {
+    body = `<div class="session-error">${escapeHtml(r.error ?? '')}</div>`
+      + `<div class="upload-actions"><button type="button" data-upload-redo="${id}">やり直す</button><button type="button" class="danger" data-upload-delete="${id}">消す</button></div>`;
+  }
+  return `<div class="session-head"><span class="mono">${escapeHtml(r.filename)}</span><span>${time}</span><span class="badge ${cls}">${label}</span></div>${body}`;
+}
+
+async function prefetchFinal(id) {
+  if (finalBlobs.has(id)) return;
+  finalBlobs.set(id, null);
+  try {
+    const res = await fetch(uploadUrl(id, 'final.jpg'), { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    finalBlobs.set(id, await res.blob());
+  } catch {
+    finalBlobs.delete(id);
+  }
+}
+
+async function shareFinal(id) {
+  const blob = finalBlobs.get(id);
+  if (!blob) {
+    prefetchFinal(id);
+    toast('画像を読み込んでいます。少し待ってから、もう一度押してください');
+    return;
+  }
+  const name = `85store_${id}.jpg`;
+  const file = new File([blob], name, { type: 'image/jpeg' });
+  if (!navigator.canShare?.({ files: [file] })) {
+    toast('この端末では共有できません。「保存」を使ってください', true);
+    return;
+  }
+  try {
+    await navigator.share({ files: [file] });
+  } catch (e) {
+    if (e.name !== 'AbortError') toast(`共有できませんでした: ${e.message}`, true);
+  }
 }
 
 async function withBusy(button, fn) {
@@ -503,6 +690,34 @@ function bind() {
     });
   });
   $('viewer-close').onclick = () => { $('viewer').hidden = true; $('viewer-img').removeAttribute('src'); };
+  document.querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+  $('iphone-files').addEventListener('change', () => {
+    const files = [...$('iphone-files').files];
+    $('iphone-files').value = '';
+    if (files.length) sendFiles(files);
+  });
+  $('uploads').addEventListener('click', (e) => {
+    const view = e.target.closest('[data-upload-view]');
+    if (view) {
+      const id = view.dataset.uploadView;
+      showViewer(uploadUrl(id, 'final.jpg'), id, uploadUrl(id, 'final.jpg', true));
+    }
+    const share = e.target.closest('[data-share]');
+    if (share) shareFinal(share.dataset.share);
+    const redo = e.target.closest('[data-upload-redo]');
+    if (redo) withBusy(redo, async () => {
+      await post(`/api/studio/uploads/${encodeURIComponent(redo.dataset.uploadRedo)}/reprocess`);
+      finalBlobs.delete(redo.dataset.uploadRedo);
+      toast('補正をやり直します');
+      loadUploads();
+    });
+    const del = e.target.closest('[data-upload-delete]');
+    if (del && confirm('この写真と補正した画像を消します')) withBusy(del, async () => {
+      await api(`/api/studio/uploads/${encodeURIComponent(del.dataset.uploadDelete)}`, { method: 'DELETE' });
+      finalBlobs.delete(del.dataset.uploadDelete);
+      loadUploads();
+    });
+  });
   $('live-toggle').onclick = () => (live.abort ? stopLive() : startLive());
   $('log-clear').onclick = () => ($('log').innerHTML = '');
   $('log-errors').onchange = () => $('log').classList.toggle('errors-only', $('log-errors').checked);
@@ -576,6 +791,7 @@ async function main() {
   loadPresets();
   const saved = restore(KEY_PRODUCT);
   if (saved) openShoot(saved);
+  setMode(restore(KEY_MODE) ?? 'imx519');
 }
 
 main();

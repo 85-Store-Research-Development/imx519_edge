@@ -109,6 +109,9 @@ python3 -m imx519_edge burst --out ~/captures/test1 --frames 8 --ev -2 0 2
 | POST | `/api/cms/products` | 保留の下書きを作る |
 | GET | `/api/studio/sessions`・`/api/studio/sessions/{id}/preview.jpg`・`final.jpg` | スタジオの状態・進捗・完成画像（中継） |
 | POST | `/api/studio/sessions/{id}/reprocess` | 処理をやり直す |
+| POST | `/api/studio/uploads?filename=…` | iPhone カメラモード: 写真（本文がそのまま JPEG / DNG。150 MB まで）をスタジオに中継する。85pi には置かない |
+| GET | `/api/studio/uploads`・`/api/studio/uploads/{id}/preview.jpg`・`final.jpg`（`?download=true` で保存） | 補正の状態・進捗・補正した画像（中継） |
+| POST・DELETE | `/api/studio/uploads/{id}/reprocess`・`/api/studio/uploads/{id}` | 補正をやり直す / 消す |
 | POST | `/api/jobs` | 撮影（`cms_product_id` 必須） |
 | GET・DELETE | `/api/jobs/{id}` | 進捗 / 中止 |
 | GET | `/api/sessions`・`/api/sessions/{id}/manifest`・`/api/sessions/{id}/files/{name}` | 取り込み用 |

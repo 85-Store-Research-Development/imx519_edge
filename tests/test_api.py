@@ -59,6 +59,14 @@ class FakeStudio:
     def image(self, path):
         return b"\xff\xd8" + path.encode()
 
+    def file(self, path, params=None):
+        disposition = 'attachment; filename="IMG_1_85store.jpg"' if params else None
+        return b"\xff\xd8" + path.encode(), disposition
+
+    def upload(self, data, filename):
+        self.uploaded = (data, filename)
+        return {"upload_id": "u20261018-141500-abc123"}
+
     def health(self):
         return {"ok": True, "ms": 3, "error": None, "edge_ok": True}
 
@@ -73,9 +81,10 @@ def client(tmp_path):
     service = EdgeService(config, lambda: open_fake_camera(), free_bytes=lambda p: free["bytes"])
     service.start()
     cms = FakeCms()
-    app = create_app(service, cms, whois=lambda ip: f"whois-{ip}", studio=FakeStudio())
+    studio = FakeStudio()
+    app = create_app(service, cms, whois=lambda ip: f"whois-{ip}", studio=studio)
     with TestClient(app) as c:
-        c.service, c.cms, c.free = service, cms, free
+        c.service, c.cms, c.free, c.app_studio = service, cms, free, studio
         wait(lambda: service.state == "idle")
         yield c
     service.stop()
@@ -209,3 +218,19 @@ def test_studio_relay(client):
         == "POST"
     )
     assert client.get("/api/health").json()["studio"]["ok"] is True
+
+
+def test_iphone_uploads_are_relayed(client):
+    studio = client.app_studio
+    res = client.post("/api/studio/uploads", params={"filename": "IMG_1.DNG"}, content=b"II*\x00")
+    assert res.status_code == 201 and res.json() == {"upload_id": "u20261018-141500-abc123"}
+    assert studio.uploaded == (b"II*\x00", "IMG_1.DNG")
+    uid = "u20261018-141500-abc123"
+    res = client.get(f"/api/studio/uploads/{uid}/final.jpg", params={"download": True})
+    assert res.content == b"\xff\xd8/api/uploads/" + uid.encode() + b"/final.jpg"
+    assert res.headers["content-disposition"] == 'attachment; filename="IMG_1_85store.jpg"'
+    assert "content-disposition" not in client.get(f"/api/studio/uploads/{uid}/preview.jpg").headers
+    assert client.get(f"/api/studio/uploads/{uid}/report.json").status_code == 404
+    assert client.get("/api/studio/uploads/..%2Fx/final.jpg").status_code == 404
+    assert client.post(f"/api/studio/uploads/{uid}/reprocess").json()["method"] == "POST"
+    assert client.delete(f"/api/studio/uploads/{uid}").json()["method"] == "DELETE"

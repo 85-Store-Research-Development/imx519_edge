@@ -23,13 +23,24 @@ class Studio:
         self.timeout_s = timeout_s
         self.opener = opener or urllib.request.urlopen
 
-    def _open(self, path: str, method: str = "GET", params: dict | None = None):
+    def _open(
+        self,
+        path: str,
+        method: str = "GET",
+        params: dict | None = None,
+        data: bytes | None = None,
+        timeout_s: float | None = None,
+    ):
         url = f"{self.url}{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
+        if data is None and method == "POST":
+            data = b""
+        req = urllib.request.Request(url, method=method, data=data)
+        if data:
+            req.add_header("Content-Type", "application/octet-stream")
         try:
-            return self.opener(req, timeout=self.timeout_s)
+            return self.opener(req, timeout=timeout_s or self.timeout_s)
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:300]
             raise StudioError(f"サーバー {method} {path}: {e.code} {detail}", e.code) from e
@@ -43,6 +54,18 @@ class Studio:
     def image(self, path: str) -> bytes:
         with self._open(path) as res:
             return res.read()
+
+    def file(self, path: str, params: dict | None = None) -> tuple[bytes, str | None]:
+        """中身と Content-Disposition（ダウンロードのファイル名をサーバーに決めてもらう）。"""
+        with self._open(path, params=params) as res:
+            return res.read(), res.headers.get("Content-Disposition")
+
+    def upload(self, data: bytes, filename: str) -> dict:
+        """iPhone カメラモードの写真を渡す。大きい（ProRAW で約 70 MB）ので待ち時間を長くとる。"""
+        with self._open(
+            "/api/uploads", "POST", {"filename": filename}, data=data, timeout_s=180
+        ) as res:
+            return json.loads(res.read())
 
     def health(self) -> dict:
         start = time.monotonic()

@@ -28,6 +28,11 @@
   </header>
 
   <main>
+    <div class="tabs modes" role="tablist" aria-label="撮り方">
+      <button type="button" role="tab" data-mode="imx519" aria-selected="true">IMX519</button>
+      <button type="button" role="tab" data-mode="iphone" aria-selected="false">iPhone</button>
+    </div>
+
     <!-- 画面 1: 商品 -->
     <section id="view-product" class="view">
       <p id="hold-warning" class="notice" hidden>
@@ -163,6 +168,29 @@
         <p id="sessions-note" class="muted small" hidden></p>
       </section>
     </section>
+
+    <!-- iPhone カメラモード: スマホで撮った写真をサーバーで補正し、ダウンロードする -->
+    <section id="view-iphone" class="view" hidden>
+      <div class="panel">
+        <h3>iPhone で撮った写真を補正する</h3>
+        <ul class="tips small muted">
+          <li>4 隅のマーカー、カラーカード、壁のフック、服の裾までを画面に入れ、正面から撮ります</li>
+          <li>傾き・色を直し、マーカーとカードを消して、縦 2:3 に切り出します（ハンガーの位置はどの商品でも同じ）</li>
+          <li>JPEG か DNG（ProRAW）で送れます。ProRAW は「ファイルを選択」から選びます</li>
+        </ul>
+        <label class="pick primary big">
+          <input id="iphone-files" type="file" accept="image/*,.dng" multiple>
+          写真を撮る・選ぶ
+        </label>
+        <ul id="sending" class="sessions" hidden></ul>
+      </div>
+      <section class="panel">
+        <h3>補正した画像</h3>
+        <ul id="uploads" class="sessions"></ul>
+        <p id="uploads-empty" class="muted small" hidden>まだありません。</p>
+        <p id="uploads-note" class="muted small" hidden></p>
+      </section>
+    </section>
   </main>
 
   <section class="logbox" aria-label="ログ">
@@ -178,6 +206,7 @@
     <div class="viewer-bar">
       <span id="viewer-title" class="small mono"></span>
       <a id="viewer-open" class="small" target="_blank" rel="noopener">原寸で開く</a>
+      <a id="viewer-download" class="small" download hidden>保存</a>
       <button id="viewer-close" type="button" class="link">閉じる</button>
     </div>
     <img id="viewer-img" alt="完成画像">

@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -24,6 +25,8 @@ from .studio import Studio, StudioError
 
 STATIC = Path(__file__).parent / "static"
 SESSION_ID = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(_c[0-9]+)?$")
+UPLOAD_ID = re.compile(r"^u[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # iPhone の ProRAW（48MP）は約 70 MB
 
 
 class MeterIn(BaseModel):
@@ -282,6 +285,53 @@ def create_app(
         result = guard(need_studio().json, f"/api/sessions/{session_id}/reprocess", method="POST")
         service.log("info", f"処理をやり直します: {session_id}")
         return result
+
+    # --- iPhone カメラモード（写真をサーバーに中継し、補正した画像を返す） ---
+
+    def upload_id_or_404(upload_id: str) -> str:
+        if not UPLOAD_ID.match(upload_id):
+            raise HTTPException(404, "ありません")
+        return upload_id
+
+    @app.post("/api/studio/uploads", status_code=201)
+    async def studio_upload(request: Request, filename: str):
+        """本文は写真そのもの。85pi には置かず、そのままサーバーに渡す。"""
+        if int(request.headers.get("content-length") or 0) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "大きすぎます")
+        data = await request.body()
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "大きすぎます")
+        result = await run_in_threadpool(guard, need_studio().upload, data, filename)
+        service.log(
+            "info", f"iPhone の写真をサーバーに送りました: {filename}（{len(data) / 1e6:.1f} MB）"
+        )
+        return result
+
+    @app.get("/api/studio/uploads")
+    def studio_uploads():
+        return guard(need_studio().json, "/api/uploads")
+
+    @app.get("/api/studio/uploads/{upload_id}/{name}")
+    def studio_upload_file(upload_id: str, name: str, download: bool = False):
+        upload_id_or_404(upload_id)
+        if name not in ("preview.jpg", "final.jpg"):
+            raise HTTPException(404, "ありません")
+        params = {"download": "true"} if download and name == "final.jpg" else None
+        data, disposition = guard(need_studio().file, f"/api/uploads/{upload_id}/{name}", params)
+        headers = {"Cache-Control": "no-store"}
+        if disposition:
+            headers["Content-Disposition"] = disposition
+        return Response(data, media_type="image/jpeg", headers=headers)
+
+    @app.post("/api/studio/uploads/{upload_id}/reprocess")
+    def studio_upload_reprocess(upload_id: str):
+        upload_id_or_404(upload_id)
+        return guard(need_studio().json, f"/api/uploads/{upload_id}/reprocess", method="POST")
+
+    @app.delete("/api/studio/uploads/{upload_id}")
+    def studio_upload_delete(upload_id: str):
+        upload_id_or_404(upload_id)
+        return guard(need_studio().json, f"/api/uploads/{upload_id}", method="DELETE")
 
     # --- 撮影ジョブ ---
 

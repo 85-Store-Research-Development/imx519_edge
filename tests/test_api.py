@@ -4,11 +4,13 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from imx519_edge import studio_routes
 from imx519_edge.api import create_app
 from imx519_edge.config import Config, SequenceConfig, StorageConfig
 from imx519_edge.fake import open_fake_camera
 from imx519_edge.manifest import sha256_file
 from imx519_edge.service import EdgeService
+from imx519_edge.studio import StudioError
 
 PRODUCT = {
     "id": 42,
@@ -63,8 +65,15 @@ class FakeStudio:
         disposition = 'attachment; filename="IMG_1_85store.jpg"' if params else None
         return b"\xff\xd8" + path.encode(), disposition
 
-    def upload(self, data, filename):
-        self.uploaded = (data, filename)
+    fail_after = None  # これだけ読んだら、届かなくなったことにする
+
+    def upload(self, data, filename, length=None):
+        received = []
+        for chunk in data:
+            received.append(chunk)
+            if self.fail_after is not None and sum(map(len, received)) >= self.fail_after:
+                raise StudioError("サーバーに届きません: テスト")
+        self.uploaded = (b"".join(received), filename, length)
         return {"upload_id": "u20261018-141500-abc123"}
 
     def health(self):
@@ -224,7 +233,7 @@ def test_iphone_uploads_are_relayed(client):
     studio = client.app_studio
     res = client.post("/api/studio/uploads", params={"filename": "IMG_1.DNG"}, content=b"II*\x00")
     assert res.status_code == 201 and res.json() == {"upload_id": "u20261018-141500-abc123"}
-    assert studio.uploaded == (b"II*\x00", "IMG_1.DNG")
+    assert studio.uploaded == (b"II*\x00", "IMG_1.DNG", 4)
     uid = "u20261018-141500-abc123"
     res = client.get(f"/api/studio/uploads/{uid}/final.jpg", params={"download": True})
     assert res.content == b"\xff\xd8/api/uploads/" + uid.encode() + b"/final.jpg"
@@ -234,3 +243,37 @@ def test_iphone_uploads_are_relayed(client):
     assert client.get("/api/studio/uploads/..%2Fx/final.jpg").status_code == 404
     assert client.post(f"/api/studio/uploads/{uid}/reprocess").json()["method"] == "POST"
     assert client.delete(f"/api/studio/uploads/{uid}").json()["method"] == "DELETE"
+
+
+def test_iphone_upload_is_relayed_in_pieces(client, monkeypatch):
+    """大きい写真も、受け取った分から順に渡す（85pi のメモリに全部載せない）。"""
+    studio = client.app_studio
+    data = bytes(range(256)) * 40_000  # 約 10 MB
+
+    def pieces():
+        for i in range(0, len(data), 1 << 20):
+            yield data[i : i + (1 << 20)]
+
+    res = client.post("/api/studio/uploads", params={"filename": "IMG_2.DNG"}, content=pieces())
+    assert res.status_code == 201
+    assert studio.uploaded[0] == data
+
+    monkeypatch.setattr(studio_routes, "MAX_UPLOAD_BYTES", 3 << 20)
+    res = client.post("/api/studio/uploads", params={"filename": "big.DNG"}, content=data)
+    assert res.status_code == 413
+    res = client.post("/api/studio/uploads", params={"filename": "big.DNG"}, content=pieces())
+    assert res.status_code == 413
+
+
+def test_iphone_upload_when_studio_fails_midway(client):
+    studio = client.app_studio
+    studio.fail_after = 2 << 20
+    data = b"x" * (40 << 20)
+
+    def pieces():
+        for i in range(0, len(data), 1 << 16):
+            yield data[i : i + (1 << 16)]
+
+    res = client.post("/api/studio/uploads", params={"filename": "IMG_3.DNG"}, content=pieces())
+    assert res.status_code == 502
+    assert "届きません" in res.json()["detail"]

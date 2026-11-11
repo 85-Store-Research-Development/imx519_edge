@@ -4,14 +4,12 @@ import asyncio
 import contextlib
 import json
 import queue
-import re
 import shutil
 import time
 from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,12 +19,11 @@ from .identity import operator_from, tailscale_whois
 from .manifest import MANIFEST, manifest_digest
 from .pantilt import Presets
 from .service import Busy, EdgeService, NoSpace
+from .session import SESSION_ID
 from .studio import Studio, StudioError
+from .studio_routes import studio_router
 
 STATIC = Path(__file__).parent / "static"
-SESSION_ID = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(_c[0-9]+)?$")
-UPLOAD_ID = re.compile(r"^u[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
-MAX_UPLOAD_BYTES = 150 * 1024 * 1024  # iPhone の ProRAW（48MP）は約 70 MB
 
 
 class MeterIn(BaseModel):
@@ -259,79 +256,7 @@ def create_app(
         service.log("info", f"CMS に保留の下書きを作りました: #{product['id']} {product['title']}")
         return product
 
-    # --- サーバー（完成画像と処理の進み具合を中継する） ---
-
-    def need_studio() -> Studio:
-        if not studio:
-            raise HTTPException(503, "サーバーの設定がありません")
-        return studio
-
-    @app.get("/api/studio/sessions")
-    def studio_sessions(cms_id: int | None = None):
-        params = {"cms_id": cms_id} if cms_id is not None else None
-        return guard(need_studio().json, "/api/sessions", params=params)
-
-    @app.get("/api/studio/sessions/{session_id}/{name}")
-    def studio_image(session_id: str, name: str):
-        if not SESSION_ID.match(session_id) or name not in ("preview.jpg", "final.jpg"):
-            raise HTTPException(404, "ありません")
-        data = guard(need_studio().image, f"/api/sessions/{session_id}/{name}")
-        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=60"})
-
-    @app.post("/api/studio/sessions/{session_id}/reprocess")
-    def studio_reprocess(session_id: str):
-        if not SESSION_ID.match(session_id):
-            raise HTTPException(404, "ありません")
-        result = guard(need_studio().json, f"/api/sessions/{session_id}/reprocess", method="POST")
-        service.log("info", f"処理をやり直します: {session_id}")
-        return result
-
-    # --- iPhone カメラモード（写真をサーバーに中継し、補正した画像を返す） ---
-
-    def upload_id_or_404(upload_id: str) -> str:
-        if not UPLOAD_ID.match(upload_id):
-            raise HTTPException(404, "ありません")
-        return upload_id
-
-    @app.post("/api/studio/uploads", status_code=201)
-    async def studio_upload(request: Request, filename: str):
-        """本文は写真そのもの。85pi には置かず、そのままサーバーに渡す。"""
-        if int(request.headers.get("content-length") or 0) > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, "大きすぎます")
-        data = await request.body()
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise HTTPException(413, "大きすぎます")
-        result = await run_in_threadpool(guard, need_studio().upload, data, filename)
-        service.log(
-            "info", f"iPhone の写真をサーバーに送りました: {filename}（{len(data) / 1e6:.1f} MB）"
-        )
-        return result
-
-    @app.get("/api/studio/uploads")
-    def studio_uploads():
-        return guard(need_studio().json, "/api/uploads")
-
-    @app.get("/api/studio/uploads/{upload_id}/{name}")
-    def studio_upload_file(upload_id: str, name: str, download: bool = False):
-        upload_id_or_404(upload_id)
-        if name not in ("preview.jpg", "final.jpg"):
-            raise HTTPException(404, "ありません")
-        params = {"download": "true"} if download and name == "final.jpg" else None
-        data, disposition = guard(need_studio().file, f"/api/uploads/{upload_id}/{name}", params)
-        headers = {"Cache-Control": "no-store"}
-        if disposition:
-            headers["Content-Disposition"] = disposition
-        return Response(data, media_type="image/jpeg", headers=headers)
-
-    @app.post("/api/studio/uploads/{upload_id}/reprocess")
-    def studio_upload_reprocess(upload_id: str):
-        upload_id_or_404(upload_id)
-        return guard(need_studio().json, f"/api/uploads/{upload_id}/reprocess", method="POST")
-
-    @app.delete("/api/studio/uploads/{upload_id}")
-    def studio_upload_delete(upload_id: str):
-        upload_id_or_404(upload_id)
-        return guard(need_studio().json, f"/api/uploads/{upload_id}", method="DELETE")
+    app.include_router(studio_router(studio, guard, service.log))
 
     # --- 撮影ジョブ ---
 

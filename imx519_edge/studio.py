@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 
 
 class StudioError(Exception):
@@ -28,8 +29,9 @@ class Studio:
         path: str,
         method: str = "GET",
         params: dict | None = None,
-        data: bytes | None = None,
+        data: bytes | Iterable[bytes] | None = None,
         timeout_s: float | None = None,
+        length: int | None = None,
     ):
         url = f"{self.url}{path}"
         if params:
@@ -39,6 +41,9 @@ class Studio:
         req = urllib.request.Request(url, method=method, data=data)
         if data:
             req.add_header("Content-Type", "application/octet-stream")
+        if length is not None:
+            # 長さが分からない（中身が順に来る）ときは、urllib が chunked で送る
+            req.add_header("Content-Length", str(length))
         try:
             return self.opener(req, timeout=timeout_s or self.timeout_s)
         except urllib.error.HTTPError as e:
@@ -60,10 +65,20 @@ class Studio:
         with self._open(path, params=params) as res:
             return res.read(), res.headers.get("Content-Disposition")
 
-    def upload(self, data: bytes, filename: str) -> dict:
-        """iPhone カメラモードの写真を渡す。大きい（ProRAW で約 70 MB）ので待ち時間を長くとる。"""
+    def upload(
+        self, data: bytes | Iterable[bytes], filename: str, length: int | None = None
+    ) -> dict:
+        """iPhone カメラモードの写真を渡す。大きい（ProRAW で約 70 MB）ので待ち時間を長くとる。
+
+        data は順に読むかたまりでもよい（85pi のメモリに全部載せずに中継する）。
+        """
         with self._open(
-            "/api/uploads", "POST", {"filename": filename}, data=data, timeout_s=180
+            "/api/uploads",
+            "POST",
+            {"filename": filename},
+            data=data,
+            timeout_s=180,
+            length=length,
         ) as res:
             return json.loads(res.read())
 

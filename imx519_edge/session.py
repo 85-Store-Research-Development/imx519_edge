@@ -6,12 +6,15 @@ v0（capture_burst.py の形。schema_version が無く、ファイル名は ev{
 """
 
 import json
+import re
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 SCHEMA_VERSION = 1
+# new_session_id の形（_c の後ろは CMS の商品 ID）
+SESSION_ID = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(_c[0-9]+)?$")
 
 
 @dataclass

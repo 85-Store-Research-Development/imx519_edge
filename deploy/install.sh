@@ -9,7 +9,8 @@ cd "$(dirname "$0")/.."
 
 mkdir -p ~/.config/imx519_edge ~/.config/systemd/user ~/captures
 [ -f ~/.config/imx519_edge/config.toml ] || cp deploy/config.example.toml ~/.config/imx519_edge/config.toml
-cp deploy/imx519-edge.service ~/.config/systemd/user/
+# ユニットの中の置き場所（%h/imx519_edge）を、このリポジトリの実際の場所に書き換えて置く
+sed "s#%h/imx519_edge#$(pwd)#g" deploy/imx519-edge.service > ~/.config/systemd/user/imx519-edge.service
 systemctl --user daemon-reload
 systemctl --user enable --now imx519-edge
 

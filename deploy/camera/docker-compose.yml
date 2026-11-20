@@ -30,6 +30,8 @@ services:
     environment:
       # Cloudflare の API トークン（85-store.com の DNS の編集だけ）。証明書を DNS で取るのに使う
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      # 中継先（撮影アプリを動かしている機械の tailscale serve）。書かなければ Caddyfile の既定（85pi）
+      - EDGE_UPSTREAM=${EDGE_UPSTREAM:-https://85pi.taila713c8.ts.net:12443}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

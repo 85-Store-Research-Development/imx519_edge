@@ -45,6 +45,18 @@ git clone https://github.com/HayatoShimada/imx519_edge.git ~/imx519_edge
 - パンチルトは、I2C を有効にし（`/boot/firmware/config.txt` に `dtparam=i2c_arm=on`、要 sudo と再起動）、
   `i2cdetect -y 1` で 0x40 が見えてから、設定の `[pantilt] enabled = true` にする
 
+## 85pi 以外で動かす（iPhone カメラモードだけ）
+
+カメラ（Picamera2）が無い機械でも、撮影アプリは起動する（状態は「カメラを開けません」のまま）。CMS の下書き・iPhone の写真の中継・
+完成画像の表示は動くので、スタジオと同じ機械で動かせば、写真が 85pi を経由しない。
+
+- `deploy/install.sh` は、リポジトリを置いた場所に合わせてユニットを書く（置き場所は自由）
+- `deploy/camera/.env` に `EDGE_UPSTREAM=https://<その機械>.<tailnet>.ts.net:12443` を書く（Caddy の中継先）
+- その機械は、タグなしの管理者の端末であること（CMS の whois 認証を通るため）
+- camera 端末（`deploy/camera`）を別の機械へ移すときは、docker のボリューム `camera_tailscale-state` を写せば tailnet のアドレスが変わらず、DNS もそのまま使える
+
+2026-11-20 から、本番は `home-linux` の `~/srv/imx519_edge` で動いている（85pi のカメラは認識されていなかったため）。実機のカメラで撮るときは 85pi に戻す。
+
 ## camera.85-store.com の入口（`deploy/camera/`）
 
 85pi の 443 番は tailscale serve（`85pi.taila713c8.ts.net`）が使っているので、85store-cms と同じ形の入口を別に立てる。

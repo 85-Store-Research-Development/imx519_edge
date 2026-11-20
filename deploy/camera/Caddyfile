@@ -19,9 +19,9 @@ camera.85-store.com:8443 {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 		resolvers 1.1.1.1
 	}
-	# 85pi の tailscale serve（:12443）へ。camera 端末はタグ付きなので、撮影アプリには利用者の名前が届かない。
+	# 撮影アプリを動かしている機械の tailscale serve（:12443）へ（.env の EDGE_UPSTREAM。既定は 85pi）。camera 端末はタグ付きなので、撮影アプリには利用者の名前が届かない。
 	# 代わりに接続元（スマホの tailnet のアドレス）を X-Camera-Client で渡し、撮影アプリが whois で名前を引く
-	reverse_proxy https://85pi.taila713c8.ts.net:12443 {
+	reverse_proxy {$EDGE_UPSTREAM:https://85pi.taila713c8.ts.net:12443} {
 		header_up Host {upstream_hostport}
 		header_up X-Camera-Client {remote_host}
 		header_up -Tailscale-User-Login
